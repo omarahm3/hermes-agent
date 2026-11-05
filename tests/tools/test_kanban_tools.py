@@ -1483,3 +1483,54 @@ class TestDefaultTaskId:
         assert kt._default_task_id("") == worker_env
         assert kt._default_task_id("   ") == worker_env
         assert kt._default_task_id(None) == worker_env
+
+
+def _seed_history(tid, comments, runs, events):
+    import time
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    now = int(time.time())
+    with kbc.connect() as conn:
+        for i in range(1, comments + 1):
+            kb.add_comment(conn, tid, "reviewer", f"comment-body-{i:02d}")
+        for i in range(1, runs + 1):
+            conn.execute(
+                "INSERT INTO task_runs (task_id, profile, status, started_at, ended_at, outcome, summary) "
+                "VALUES (?, 'implementer', 'done', ?, ?, 'review_requested', ?)",
+                (tid, now - 10_000 + i * 10, now - 10_000 + i * 10 + 5, f"run-summary-{i:02d}"))
+        for i in range(1, events + 1):
+            conn.execute(
+                "INSERT INTO task_events (task_id, kind, payload, created_at) VALUES (?, 'note', ?, ?)",
+                (tid, json.dumps({"n": i}), now - 5_000 + i))
+        conn.commit()
+
+
+def test_show_is_brief_by_default_on_long_lived_cards(worker_env):
+    """A card that looped through many review rounds returned every comment, every
+    run and 50 events on each kanban_show (p90 ~20k tokens). The default answer keeps
+    only the newest entries and says how many it left out."""
+    from tools import kanban_tools as kt
+    _seed_history(worker_env, comments=25, runs=12, events=40)
+
+    d = json.loads(kt._handle_show({}))
+
+    assert [c["body"] for c in d["comments"]][-1] == "comment-body-25"
+    assert len(d["comments"]) == 10
+    assert len(d["runs"]) == 3
+    assert len(d["events"]) == 10
+    assert d["omitted"]["comments"] == 15
+    assert d["omitted"]["runs"] == 10
+    assert d["omitted"]["events"] >= 30
+    assert "full=true" in d["hint"]
+
+
+def test_show_full_returns_entire_history(worker_env):
+    from tools import kanban_tools as kt
+    _seed_history(worker_env, comments=25, runs=12, events=40)
+
+    d = json.loads(kt._handle_show({"full": True}))
+
+    assert len(d["comments"]) == 25
+    assert len(d["runs"]) == 13
+    assert len(d["events"]) == 50
+    assert "omitted" not in d
