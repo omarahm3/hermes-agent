@@ -30,6 +30,9 @@ logger = logging.getLogger(__name__)
 
 KANBAN_LIST_DEFAULT_LIMIT = 50
 KANBAN_LIST_MAX_LIMIT = 200
+_SHOW_BRIEF_COMMENTS = 10
+_SHOW_BRIEF_RUNS = 3
+_SHOW_BRIEF_EVENTS = 10
 
 
 # --- Gating ---
@@ -661,7 +664,7 @@ def inject_new_comments_from_env(agent: Any) -> bool:
 
 @_kanban_handler("kanban_show")
 def _handle_show(args: dict, **kw) -> str:
-    """Full task state: row, parents, children, comments, runs, last 50 events."""
+    """Task state: row, parents, children, newest comments/runs/events (all with full=true)."""
     tid = _default_task_id(args.get("task_id"))
     if not tid:
         # No dispatcher task in scope and no explicit id: the caller asked "what
@@ -674,9 +677,26 @@ def _handle_show(args: dict, **kw) -> str:
                 "task to show by default. Call kanban_list to see task ids on "
                 "the board, then kanban_show(task_id=<id>) for full state."),
         })
+    full = _parse_bool_arg(args, "full")
     with _board(args.get("board")) as (kb, conn):
         task = _existing_task(kb, conn, tid)
-        return json.dumps({
+        comments = kb.list_comments(conn, tid)
+        events = kb.list_events(conn, tid)[-50:]
+        runs = kb.list_runs(conn, tid)
+        result = {}
+        if not full:
+            # Long-lived cards made this answer ~20k tokens at p90; the newest entries
+            # carry the state a worker acts on, and worker_context covers the rest.
+            omitted = {"comments": max(0, len(comments) - _SHOW_BRIEF_COMMENTS),
+                       "runs": max(0, len(runs) - _SHOW_BRIEF_RUNS),
+                       "events": max(0, len(kb.list_events(conn, tid)) - _SHOW_BRIEF_EVENTS)}
+            comments = comments[-_SHOW_BRIEF_COMMENTS:]
+            runs = runs[-_SHOW_BRIEF_RUNS:]
+            events = events[-_SHOW_BRIEF_EVENTS:]
+            if any(omitted.values()):
+                result["omitted"] = omitted
+                result["hint"] = "Older entries omitted; call kanban_show(full=true) for the whole history."
+        result.update({
             "task": _fields(task, _TASK_FIELDS),
             "parents": kb.parent_ids(conn, tid),
             # Non-terminal parents; on a running card this means the dependency
@@ -684,12 +704,13 @@ def _handle_show(args: dict, **kw) -> str:
             "unsatisfied_parents": [
                 {"id": pid, "status": status} for pid, status in kb.unsatisfied_parents(conn, tid)],
             "children": kb.child_ids(conn, tid),
-            "comments": [_fields(c, _COMMENT_FIELDS) for c in kb.list_comments(conn, tid)],
-            # Capped; full log via CLI.
-            "events": [_fields(e, _EVENT_FIELDS) for e in kb.list_events(conn, tid)[-50:]],
-            "runs": [_fields(r, _RUN_FIELDS) for r in kb.list_runs(conn, tid)],
+            "comments": [_fields(c, _COMMENT_FIELDS) for c in comments],
+            # Capped at 50 even with full=true; full log via CLI.
+            "events": [_fields(e, _EVENT_FIELDS) for e in events],
+            "runs": [_fields(r, _RUN_FIELDS) for r in runs],
             # Same string build_worker_context hands the dispatcher at spawn time.
             "worker_context": kb.build_worker_context(conn, tid)})
+        return json.dumps(result)
 
 
 @_kanban_handler("kanban_list")
