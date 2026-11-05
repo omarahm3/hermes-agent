@@ -20,8 +20,8 @@ if TYPE_CHECKING:
     from hermes_cli.kanban_db import Attachment, Comment, Task
 
 # build_worker_context() caps, sized for a ~100k-char prompt with headroom.
-_CTX_MAX_PRIOR_ATTEMPTS = 10      # most recent N prior runs shown in full
-_CTX_MAX_COMMENTS       = 30      # most recent N comments shown in full
+_CTX_MAX_PRIOR_ATTEMPTS = 3       # most recent N prior runs shown in full
+_CTX_MAX_COMMENTS       = 10      # most recent N comments shown in full
 _CTX_MAX_FIELD_BYTES    = 4 * 1024   # per summary/error/metadata/result
 _CTX_MAX_BODY_BYTES     = 8 * 1024   # per task.body (opening post)
 _CTX_MAX_COMMENT_BYTES  = 2 * 1024   # per comment
